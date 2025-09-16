@@ -2,7 +2,7 @@ import getpass
 import os
 
 def getFloat(prompt):
-    while True:
+    while 1:
         try:
             return float(input(prompt))
         except ValueError:
@@ -163,7 +163,7 @@ def logIn():
         print("Invalid credentials.")
 
 def accountMenu(account):
-    while True:
+    while 1:
         clearScreen()
         print("--- Account Menu ---")
         print("1. Deposit")
@@ -245,7 +245,7 @@ def accountMenu(account):
             print("Invalid option.")
             pause()
 
-while True:
+while 1:
     clearScreen()
     print("=== Simple Bank App ===")
     print("1. Register")
