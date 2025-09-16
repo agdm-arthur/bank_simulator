@@ -1,10 +1,3 @@
-// bank.c - Optimized Simple Bank App
-// - cents-based money
-// - ring-buffer tx log
-// - open-addressing PIX hash table
-// - ANSI clear (VT on Windows)
-// Compile: gcc -O3 -march=native -std=gnu11 -flto -pipe -Wall -Wextra -o bank.exe bank.c
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +13,6 @@
   #include <unistd.h>
 #endif
 
-/* ---------- Config ---------- */
 #define MAX_ACCOUNTS   1024
 #define MAX_NAME_LEN   32
 #define MAX_PASS_LEN   64
@@ -30,17 +22,14 @@
 #define TX_LOG_SIZE    256
 #define TX_NOTE_LEN    40
 
-/* PIX hash table size (power of two) */
 #define PIX_TABLE_BITS 11
-#define PIX_TABLE_SIZE (1u << PIX_TABLE_BITS)  // 2048
+#define PIX_TABLE_SIZE (1u << PIX_TABLE_BITS)
 
-/* ---------- Types & Macros ---------- */
-typedef int64_t cents_t; // money in cents
+typedef int64_t cents_t;
 
 #define likely(x)   __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
-/* transaction type */
 typedef enum { TX_DEPOSIT=1, TX_WITHDRAW=2, TX_TRANSFER_OUT=3, TX_TRANSFER_IN=4, TX_CREDIT_ADV=5, TX_MISC=6 } tx_type_t;
 
 typedef struct {
@@ -49,36 +38,31 @@ typedef struct {
     char note[TX_NOTE_LEN];
 } tx_t;
 
-/* ring buffer transaction log */
 typedef struct {
     tx_t entries[TX_LOG_SIZE];
-    unsigned head;   // index of oldest
-    unsigned count;  // number stored
+    unsigned head;
+    unsigned count;
 } txlog_t;
 
-/* Account */
 typedef struct {
     char username[MAX_NAME_LEN];
     char password[MAX_PASS_LEN];
     char agency[MAX_AGENCY_LEN];
-    cents_t balance;       // cents
-    cents_t credit_limit;  // cents
-    cents_t credit_used;   // cents
+    cents_t balance;
+    cents_t credit_limit;
+    cents_t credit_used;
     char pix_key[MAX_PIX_LEN];
 
     txlog_t txlog;
 
-    int used; // boolean
+    int used;
 } Account;
 
-/* ---------- Globals ---------- */
 static Account accounts[MAX_ACCOUNTS];
 static unsigned account_count = 0;
 
-/* PIX table stores account_index+1 (0 == empty) */
 static int pix_table[PIX_TABLE_SIZE];
 
-/* ---------- Utilities ---------- */
 static inline void enable_vt_on_windows(void) {
 #if defined(_WIN32) || defined(_WIN64)
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -90,13 +74,11 @@ static inline void enable_vt_on_windows(void) {
 #endif
 }
 
-/* fast clear using ANSI */
 static inline void fast_clear(void) {
     fputs("\x1b[2J\x1b[H", stdout);
     fflush(stdout);
 }
 
-/* safe string copy using memcpy after computing length */
 static inline void safe_strcpy(char *dst, const char *src, size_t dstcap) {
     if (dstcap == 0) return;
     size_t n = strnlen(src, dstcap-1);
@@ -104,7 +86,6 @@ static inline void safe_strcpy(char *dst, const char *src, size_t dstcap) {
     dst[n] = '\0';
 }
 
-/* read line into buf */
 static inline void readln(char *buf, size_t cap) {
     if (!fgets(buf, (int)cap, stdin)) {
         buf[0] = '\0';
@@ -114,7 +95,6 @@ static inline void readln(char *buf, size_t cap) {
     if (len && buf[len-1] == '\n') buf[len-1] = '\0';
 }
 
-/* small password input (no-echo) */
 static void get_password(const char *prompt, char *out, size_t cap) {
     if (prompt) { fputs(prompt, stdout); fflush(stdout); }
 #if defined(_WIN32) || defined(_WIN64)
@@ -140,9 +120,6 @@ static void get_password(const char *prompt, char *out, size_t cap) {
 #endif
 }
 
-/* ---------- Money parsing ---------- */
-/* parse string like "123.45" or "12" or "0.5" into cents (int64) */
-/* returns 1 on success, 0 on failure */
 static int parse_money_to_cents(const char *s, cents_t *out) {
     if (unlikely(!s || !*s)) return 0;
     const char *p = s;
@@ -150,13 +127,12 @@ static int parse_money_to_cents(const char *s, cents_t *out) {
     if (*p == '+') p++;
     else if (*p == '-') { sign = -1; p++; }
 
-    // whole part
     int64_t whole = 0;
     int digits = 0;
     while (*p && *p >= '0' && *p <= '9') {
         whole = whole * 10 + (*p - '0');
         p++; digits++;
-        // prevent overflow (very large numbers not expected)
+
         if (unlikely(whole > (INT64_C(1) << 60))) return 0;
     }
 
@@ -168,15 +144,14 @@ static int parse_money_to_cents(const char *s, cents_t *out) {
             frac = frac * 10 + (*p - '0');
             p++; fdigits++;
         }
-        // if only one fractional digit, scale
+
         if (fdigits == 1) frac *= 10;
-        // skip additional fractional digits (no rounding)
+
         while (*p && *p >= '0' && *p <= '9') p++;
     } else {
         frac = 0;
     }
 
-    // allow trailing whitespace
     while (*p && isspace((unsigned char)*p)) p++;
     if (*p != '\0') return 0;
 
@@ -184,7 +159,6 @@ static int parse_money_to_cents(const char *s, cents_t *out) {
     return 1;
 }
 
-/* prompt and read cents (re-prompts on invalid) */
 static cents_t read_cents_prompt(const char *prompt) {
     char buf[128];
     cents_t val;
@@ -196,7 +170,6 @@ static cents_t read_cents_prompt(const char *prompt) {
     }
 }
 
-/* format cents to string like "123.45" into out (outcap >= 32 recommended) */
 static void cents_to_str(cents_t c, char *out, size_t outcap) {
     if (outcap == 0) return;
     int neg = 0;
@@ -207,7 +180,6 @@ static void cents_to_str(cents_t c, char *out, size_t outcap) {
     else snprintf(out, outcap, "%" PRId64 ".%02" PRId64, whole, frac);
 }
 
-/* ---------- Transaction log (ring buffer) ---------- */
 static inline void txlog_push(txlog_t *log, tx_type_t type, cents_t amount, const char *note) {
     unsigned idx;
     if (log->count < TX_LOG_SIZE) {
@@ -222,7 +194,6 @@ static inline void txlog_push(txlog_t *log, tx_type_t type, cents_t amount, cons
     safe_strcpy(log->entries[idx].note, note ? note : "", TX_NOTE_LEN);
 }
 
-/* print transaction log */
 static void print_txlog(const txlog_t *log) {
     if (log->count == 0) { puts("<no transactions>"); return; }
     for (unsigned i = 0; i < log->count; ++i) {
@@ -243,7 +214,6 @@ static void print_txlog(const txlog_t *log) {
     }
 }
 
-/* ---------- PIX hash table (open addressing, simple FNV-1a) ---------- */
 static inline uint64_t fnv1a_hash(const char *s) {
     uint64_t h = 1469598103934665603ULL;
     while (*s) {
@@ -253,7 +223,6 @@ static inline uint64_t fnv1a_hash(const char *s) {
     return h;
 }
 
-/* find account index by pix key, or -1 */
 static int pix_find(const char *key) {
     if (!key || !key[0]) return -1;
     uint64_t h = fnv1a_hash(key);
@@ -269,7 +238,6 @@ static int pix_find(const char *key) {
     }
 }
 
-/* insert mapping key -> account_index (overwrites existing if present) */
 static void pix_insert(const char *key, int account_index) {
     if (!key || !key[0]) return;
     uint64_t h = fnv1a_hash(key);
@@ -285,17 +253,16 @@ static void pix_insert(const char *key, int account_index) {
     pix_table[idx] = account_index + 1;
 }
 
-/* remove mapping for key (if any) keeping clustering intact */
 static void pix_remove(const char *key) {
     if (!key || !key[0]) return;
     uint64_t h = fnv1a_hash(key);
     uint32_t idx = (uint32_t)h & (PIX_TABLE_SIZE - 1);
     for (;;) {
         int v = pix_table[idx];
-        if (v == 0) return; // not found
+        if (v == 0) return;
         int ai = v - 1;
         if (ai >= 0 && ai < (int)account_count && accounts[ai].used && accounts[ai].pix_key[0] && strcmp(accounts[ai].pix_key, key) == 0) {
-            // remove and rehash following cluster
+
             pix_table[idx] = 0;
             uint32_t j = (idx + 1) & (PIX_TABLE_SIZE - 1);
             while (pix_table[j] != 0) {
@@ -312,7 +279,6 @@ static void pix_remove(const char *key) {
     }
 }
 
-/* ---------- Account helpers ---------- */
 static int find_account_by_name(const char *name) {
     for (unsigned i = 0; i < account_count; ++i) {
         if (accounts[i].used && strcmp(accounts[i].username, name) == 0) return (int)i;
@@ -324,7 +290,6 @@ static void log_account_tx(Account *a, tx_type_t type, cents_t amt, const char *
     txlog_push(&a->txlog, type, amt, note);
 }
 
-/* ---------- Banking operations ---------- */
 static void deposit(Account *a, cents_t amount) {
     fast_clear();
     if (unlikely(amount <= 0)) {
@@ -356,10 +321,6 @@ static void withdraw_(Account *a, cents_t amount) {
     }
 }
 
-/* transfer behavior:
-   - if target pix == own pix -> credit advance (if credit available)
-   - else find target account by pix and transfer if balance sufficient
-*/
 static void transfer_(Account *a, cents_t amount, const char *pix_key) {
     fast_clear();
     if (unlikely(a->pix_key[0] == '\0')) { puts("You must set your own PIX key before making transfers."); return; }
@@ -421,7 +382,6 @@ static int change_password(Account *a, const char *oldp, const char *newp) {
     return 1;
 }
 
-/* ---------- UI & Menus ---------- */
 static void pause_screen(void) {
     char tmp[8];
     puts("\nPress Enter to continue...");
@@ -441,7 +401,6 @@ static void show_account_info(const Account *a) {
     printf("PIX Key: %s\n", a->pix_key[0] ? a->pix_key : "Not set");
 }
 
-/* account menu loop */
 static void account_menu(Account *account) {
     char choice[64];
     for (;;) {
@@ -535,7 +494,6 @@ static void account_menu(Account *account) {
     }
 }
 
-/* ---------- Sign up / Log in ---------- */
 static void sign_up(void) {
     fast_clear();
     char username[MAX_NAME_LEN], agency[MAX_AGENCY_LEN];
@@ -557,7 +515,7 @@ static void sign_up(void) {
     safe_strcpy(a->password, password, MAX_PASS_LEN);
     safe_strcpy(a->agency, agency, MAX_AGENCY_LEN);
     a->balance = 0;
-    a->credit_limit = 100 * 100; // 100.00 -> cents
+    a->credit_limit = 100 * 100;
     a->credit_used = 0;
     a->txlog.head = 0; a->txlog.count = 0;
     account_count++;
@@ -584,9 +542,8 @@ static void log_in(void) {
     }
 }
 
-/* ---------- Initialization ---------- */
 static void init_sample_accounts(void) {
-    // user1
+
     if (account_count + 2 > MAX_ACCOUNTS) return;
     Account *a = &accounts[account_count++];
     memset(a, 0, sizeof *a);
@@ -599,7 +556,6 @@ static void init_sample_accounts(void) {
     a->balance = 0;
     pix_insert(a->pix_key, (int)(a - accounts));
 
-    // user2
     a = &accounts[account_count++];
     memset(a, 0, sizeof *a);
     a->used = 1;
@@ -612,7 +568,6 @@ static void init_sample_accounts(void) {
     pix_insert(a->pix_key, (int)(a - accounts));
 }
 
-/* ---------- Main ---------- */
 int main(void) {
     enable_vt_on_windows();
     memset(pix_table, 0, sizeof pix_table);
